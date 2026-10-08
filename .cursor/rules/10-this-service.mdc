@@ -1,0 +1,12 @@
+---
+description: Repositoriy alert-job-notification
+alwaysApply: true
+---
+
+# alert-job-notification
+
+Maven artifact `notification-alert-job`. Port 8019. Email/Telegram, AI queue, autoreply (Playwright/Camoufox), OTP.
+
+Key code: `service/ai/parser/impl/*AutoreplyParser`, `service/ai/queue/`.
+
+Build: parent install, then `../alert-job-common` install, then `mvn package` here.
