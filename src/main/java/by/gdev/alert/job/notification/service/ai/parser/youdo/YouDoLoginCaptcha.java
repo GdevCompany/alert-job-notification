@@ -6,7 +6,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 /**
- * Тонкая обёртка над {@link CaptchaService} для перехвата network калейдоскопа на YouDo.
+ * Перехват капчи на время логина YouDo.
+ * {@link CaptchaService#beginKaleidoscopeNetworkCapture} должен жить с первого шага до выхода из логина,
+ * включая ранние {@code return}: task и картинка калейдоскопа приходят в {@code /check} до solve.
+ * Рядом слушается XHR YouDo ({@link YouDoLoginApiListener}), тела ответов капчи он не читает.
  */
 @Component
 @RequiredArgsConstructor

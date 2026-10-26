@@ -30,7 +30,8 @@ public final class AutoreplyProxyFailures {
             AutoreplyErrorTypes.TARIFF_LIMIT,
             AutoreplyErrorTypes.EMAIL_CODE_LOGIN_ENABLED,
             AutoreplyErrorTypes.FIELD_NOT_FOUND,
-            AutoreplyErrorTypes.BUTTON_NOT_FOUND
+            AutoreplyErrorTypes.BUTTON_NOT_FOUND,
+            AutoreplyErrorTypes.BROWSER_CLOSED
     );
 
     private AutoreplyProxyFailures() {
@@ -72,10 +73,24 @@ public final class AutoreplyProxyFailures {
     }
 
     public static String errorCodeForThrowable(Throwable throwable) {
+        if (isBrowserClosedThrowable(throwable)) {
+            return AutoreplyErrorTypes.BROWSER_CLOSED;
+        }
         if (isProxyRelatedThrowable(throwable)) {
             return AutoreplyErrorTypes.PROXY_FAILED;
         }
         return null;
+    }
+
+    public static boolean isBrowserClosedMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        String m = message.toLowerCase(Locale.ROOT);
+        return m.contains("targetclosed")
+                || m.contains("target page, context or browser has been closed")
+                || m.contains("browser has been closed")
+                || m.contains("page closed");
     }
 
     private static boolean isProxyRelatedThrowable(Throwable throwable) {
@@ -88,6 +103,17 @@ public final class AutoreplyProxyFailures {
         return isProxyRelatedThrowable(throwable.getCause());
     }
 
+    private static boolean isBrowserClosedThrowable(Throwable throwable) {
+        if (throwable == null) {
+            return false;
+        }
+        if (isBrowserClosedMessage(throwable.getMessage())
+                || throwable.getClass().getSimpleName().contains("TargetClosed")) {
+            return true;
+        }
+        return isBrowserClosedThrowable(throwable.getCause());
+    }
+
     private static boolean isDefiniteNonProxy(String errorCode, String message) {
         if (errorCode != null && NON_PROXY_ERROR_CODES.contains(errorCode)) {
             return true;
@@ -96,6 +122,9 @@ public final class AutoreplyProxyFailures {
             return false;
         }
         if (message.contains(FlRuPlaywrightGuards.SITE_MAINTENANCE_MARKER)) {
+            return true;
+        }
+        if (isBrowserClosedMessage(message)) {
             return true;
         }
         String lower = message.toLowerCase(Locale.ROOT);
@@ -111,9 +140,6 @@ public final class AutoreplyProxyFailures {
             return false;
         }
         String m = message.toLowerCase(Locale.ROOT);
-        if (m.contains("targetclosed") || m.contains("browser has been closed")) {
-            return true;
-        }
         if (m.contains("err_tunnel") || m.contains("tunnel_connection_failed") || m.contains("net::err_")) {
             return true;
         }

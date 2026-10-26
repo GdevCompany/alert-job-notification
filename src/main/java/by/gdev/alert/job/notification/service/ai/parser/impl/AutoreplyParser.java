@@ -68,11 +68,11 @@ public abstract class AutoreplyParser {
     @Value("${parser.autoreply.post-login.pause-ms:0}")
     protected long postLoginPauseMs;
 
-    /** Неудач на одном прокси подряд, после чего берём следующий. */
+    /** Неудач на одном прокси подряд, после чего берём следующий. Для {@link AutoreplyMode#LOGIN_ONLY} не используется. */
     @Value("${parser.autoreply.proxy.attempts-per-proxy:3}")
     private int attemptsPerProxy;
 
-    /** Сколько раз сменить прокси после исчерпания attempts-per-proxy (0 = только закреплённый). */
+    /** Сколько раз сменить прокси после исчерпания attempts-per-proxy (0 = только закреплённый). Для LOGIN_ONLY не используется. */
     @Value("${parser.autoreply.proxy.max-rotations:2}")
     private int maxProxyRotations;
 
@@ -147,6 +147,15 @@ public abstract class AutoreplyParser {
     public final StepResult<Void> sendAutoreply(DecryptedCredential creds, AiNotificationPayload payload,
                                                 AutoreplyMode autoreplyMode) {
         PROXY_RETRY_STATE.get().reset();
+        if (autoreplyMode == AutoreplyMode.LOGIN_ONLY) {
+            StepResult<Void> once = AutoreplyProxyFailures.tagProxyFailure(
+                    runAutoreplyOnce(creds, payload, autoreplyMode));
+            if (once.failed()) {
+                log.warn("АВТООТВЕТ: {} -> LOGIN_ONLY: одна попытка, без повторов и смены прокси, code={} message={}",
+                        getSiteName(), once.getErrorCode(), once.getErrorMessage());
+            }
+            return once;
+        }
         int perProxyLimit = Math.max(1, attemptsPerProxy);
         int rotationLimit = Math.max(0, maxProxyRotations);
         int failuresOnCurrentProxy = 0;
@@ -361,7 +370,10 @@ public abstract class AutoreplyParser {
         } catch (Exception e) {
             log.error("Ошибка при отправке автоответа", e);
             byte[] screenshot = page != null ? captureScreenshot(page) : null;
-            String message = "Необработанная ошибка: " + e.getMessage();
+            String message = AutoreplyProxyFailures.isBrowserClosedMessage(e.getMessage())
+                    || (e.getClass().getSimpleName().contains("TargetClosed"))
+                    ? "Браузер или вкладка закрыты"
+                    : "Необработанная ошибка: " + e.getMessage();
             String code = AutoreplyProxyFailures.errorCodeForThrowable(e);
             if (code != null) {
                 return StepResult.fail(StepType.SEND_AUTOREPLY, code, message, screenshot);

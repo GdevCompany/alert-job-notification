@@ -65,7 +65,8 @@ public final class AutoreplyFailurePolicy {
                  "YOUDO_LOGIN_STAGE_LOOP",
                  "YOUDO_LOGIN_UNKNOWN_STAGE",
                  YouDoPlaywrightGuards.YOUDO_PROXY_BLOCKED_CODE -> AutoreplyFailureAction.ROTATE_PROXY;
-            case AutoreplyErrorTypes.LOGIN_FAILED,
+            case AutoreplyErrorTypes.BROWSER_CLOSED,
+                 AutoreplyErrorTypes.LOGIN_FAILED,
                  AutoreplyErrorTypes.OTP_NOT_RECEIVED,
                  AutoreplyErrorTypes.FIELD_NOT_FOUND,
                  AutoreplyErrorTypes.BUTTON_NOT_FOUND,

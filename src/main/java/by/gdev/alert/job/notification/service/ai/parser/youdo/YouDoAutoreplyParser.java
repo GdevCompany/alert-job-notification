@@ -25,6 +25,13 @@ import org.springframework.stereotype.Component;
 import org.slf4j.event.Level;
 
 
+/**
+ * Логин YouDo. SmartCaptcha может встать на любом шаге, от главной до ввода кода из письма.
+ * Перед продолжением шага {@link #guardCaptchaAtStep} смотрит экран: видимый калейдоскоп,
+ * advanced, чекбокс или ещё не принятый виджет решаются сразу. Ожидание OTP режется короткими
+ * интервалами, чтобы новая «Дополнительная проверка» не провисела всё время таймаута письма.
+ * Скрытая оболочка виджета после принятого токена шаг не блокирует.
+ */
 @Slf4j
 @Component
 public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPlaywrightParser {
@@ -142,6 +149,8 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
     protected StepResult<Void> login(Page page, AiNotificationPayload payload, DecryptedCredential creds, AutoreplyMode mode) {
         log.info("АВТООТВЕТ: {} -> НАЧАЛО ЛОГИНА, пользователь: {}", getSiteName(), creds.login());
         browserGuards.installForLogin(page);
+        youDoLoginCaptcha.beginNetworkCapture(page);
+        try {
         YouDoLoginFsmState.log(log, YouDoLoginFsmState.NAVIGATE_HOME, creds.login(), null);
 
         // Открыть главную страницу
@@ -152,6 +161,10 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
                 return proxyBlocked;
             }
             log.info("АВТООТВЕТ: {} -> главная страница загружена, пользователь: {}", getSiteName(), creds.login());
+            StepResult<Void> captchaHome = guardCaptchaAtStep(page, creds, "NAVIGATE_HOME");
+            if (captchaHome != null) {
+                return captchaHome;
+            }
         } catch (Exception e) {
             report(Level.WARN,
                     log,
@@ -169,6 +182,10 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
 
         YouDoLoginFsmState.log(log, YouDoLoginFsmState.DISMISS_COOKIES, creds.login(), null);
         prepareYouDoPageForLogin(page);
+        StepResult<Void> captchaCookies = guardCaptchaAtStep(page, creds, "DISMISS_COOKIES");
+        if (captchaCookies != null) {
+            return captchaCookies;
+        }
 
         YouDoLoginFsmState.log(log, YouDoLoginFsmState.OPEN_LOGIN_MODAL, creds.login(), null);
         if (!clickHeaderLoginUntilModal(page, creds.login())) {
@@ -180,6 +197,10 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         }
         log.info("АВТООТВЕТ: {} -> модалка входа открыта, пользователь: {}", getSiteName(), creds.login());
         modalLayoutFix.apply(page);
+        StepResult<Void> captchaModal = guardCaptchaAtStep(page, creds, "OPEN_LOGIN_MODAL");
+        if (captchaModal != null) {
+            return captchaModal;
+        }
 
         YouDoLoginFsmState.log(log, YouDoLoginFsmState.CHOOSE_EMAIL, creds.login(), null);
         if (!openEmailLoginStep(page, creds.login())) {
@@ -189,6 +210,10 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
             return StepResult.fail(StepType.SEND_AUTOREPLY, "Не удалось открыть вход по email", captureScreenshot(page));
         }
         log.info("АВТООТВЕТ: {} -> форма email доступна, пользователь: {}", getSiteName(), creds.login());
+        StepResult<Void> captchaEmailStep = guardCaptchaAtStep(page, creds, "CHOOSE_EMAIL");
+        if (captchaEmailStep != null) {
+            return captchaEmailStep;
+        }
 
         // Ожидание поля ввода email
         if (!waitOrFail(page, "input[name='login']", "Поле email")) {
@@ -203,6 +228,10 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         try {
             postCaptchaSubmit.ensureLoginEmail(page, creds.login());
             log.info("АВТООТВЕТ: {} -> email заполнен: {}", getSiteName(), creds.login());
+            StepResult<Void> captchaFilled = guardCaptchaAtStep(page, creds, "FILL_EMAIL");
+            if (captchaFilled != null) {
+                return captchaFilled;
+            }
         } catch (Exception e) {
             report(Level.WARN, log,
                     "АВТООТВЕТ: " + getSiteName() + " -> НЕ УДАЛОСЬ ЗАПОЛНИТЬ EMAIL, пользователь: "
@@ -211,9 +240,7 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
             return StepResult.fail(StepType.SEND_AUTOREPLY, "Не удалось заполнить email: " + e.getMessage(), captureScreenshot(page));
         }
 
-        youDoLoginCaptcha.beginNetworkCapture(page);
-        try {
-            return loginAfterEmailFilled(page, payload, creds);
+        return loginAfterEmailFilled(page, payload, creds);
         } finally {
             youDoLoginCaptcha.endNetworkCapture(page);
         }
@@ -230,6 +257,10 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         }
 
         otpService.beginOtpWait(SiteName.YOUDO.name(), creds.login());
+        StepResult<Void> captchaBeforeNext = guardCaptchaAtStep(page, creds, "SUBMIT_EMAIL");
+        if (captchaBeforeNext != null) {
+            return captchaBeforeNext;
+        }
         YouDoLoginFsmState.log(log, YouDoLoginFsmState.SUBMIT_EMAIL, creds.login(), "нажимаем «Далее»");
         log.info("АВТООТВЕТ: {} -> OTP wait начат, нажимаем «Далее», пользователь: {}", getSiteName(), creds.login());
         postCaptchaSubmit.resetNextButtonMarkupBaseline(page);
@@ -256,6 +287,12 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         }
 
         if (!isOtpFieldVisible(page)) {
+            StepResult<Void> captchaInsteadOfOtp = guardCaptchaAtStep(page, creds, "WAIT_OTP");
+            if (captchaInsteadOfOtp != null) {
+                return captchaInsteadOfOtp;
+            }
+        }
+        if (!isOtpFieldVisible(page)) {
             if (isEmailErrorPresent(page)) {
                 report(Level.WARN, log,
                         "АВТООТВЕТ: " + getSiteName() + " -> НЕПРАВИЛЬНЫЙ АДРЕС ЭЛЕКТРОННОЙ ПОЧТЫ, пользователь: " + creds.login(),
@@ -269,7 +306,22 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         }
 
         log.info("АВТООТВЕТ: {} -> ожидание OTP для {}", getSiteName(), creds.login());
-        String otp = otpService.waitForOtp(SiteName.YOUDO.name(), creds.login(), otpValidationTimeoutMs);
+        long otpDeadline = System.currentTimeMillis() + otpValidationTimeoutMs;
+        String otp = null;
+        while (otp == null && System.currentTimeMillis() < otpDeadline) {
+            StepResult<Void> captchaWhileOtp = guardCaptchaAtStep(page, creds, "WAIT_OTP");
+            if (captchaWhileOtp != null) {
+                return captchaWhileOtp;
+            }
+            if (page.isClosed()) {
+                return browserClosedResult();
+            }
+            long slice = Math.min(2_000L, otpDeadline - System.currentTimeMillis());
+            if (slice <= 0) {
+                break;
+            }
+            otp = otpService.waitForOtp(SiteName.YOUDO.name(), creds.login(), slice);
+        }
         if (otp == null) {
             report(Level.WARN, log,
                     "АВТООТВЕТ: " + getSiteName() + " -> OTP НЕ ПОЛУЧЕН за отведённое время, пользователь: " + creds.login(),
@@ -289,6 +341,10 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         }
 
         try {
+            StepResult<Void> captchaBeforeOtp = guardCaptchaAtStep(page, creds, "ENTER_OTP");
+            if (captchaBeforeOtp != null) {
+                return captchaBeforeOtp;
+            }
             humanTypeField(page, "input[name='code']", otp);
             log.info("АВТООТВЕТ: {} -> OTP заполнен для пользователя: {}", getSiteName(), creds.login());
         } catch (Exception e) {
@@ -353,7 +409,8 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
             // Капча может всплыть на любом шаге — приоритет над формой/UNKNOWN.
             if (stage != YouDoLoginStage.SMART_CAPTCHA
                     && stage != YouDoLoginStage.LOGGED_IN
-                    && smartCaptchaSupport.blocksYouDoLoginStage(page)) {
+                    && (smartCaptchaSupport.blocksYouDoLoginStage(page)
+                    || smartCaptchaSupport.hasCaptchaOnScreen(page))) {
                 YouDoLoginFsmState.log(log, YouDoLoginFsmState.CAPTCHA_GUARD, creds.login(),
                         "перехват: было " + stage + " → SMART_CAPTCHA, kind="
                                 + smartCaptchaSupport.detectCaptchaKind(page));
@@ -373,8 +430,21 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
                     log.info("АВТООТВЕТ: {} -> вызываем passLoginSmartCaptcha ({}/5), otpWaitArmed={}, пользователь: {}",
                             getSiteName(), captchaHandled, otpWaitArmed, creds.login());
                     if (!smartCaptchaSupport.passLoginSmartCaptcha(page, creds.login())) {
+                        if (page.isClosed()) {
+                            return browserClosedResult();
+                        }
+                        if (isOtpFieldVisible(page) || smartCaptchaSupport.isOtpFieldVisible(page)) {
+                            log.info("АВТООТВЕТ: {} -> капча не снята, но поле OTP на экране — вводим код, пользователь: {}",
+                                    getSiteName(), creds.login());
+                            return null;
+                        }
                         return failYouDoCaptcha(page, creds.login(),
                                 "YouDo SmartCaptcha не пройдена (чекбокс / калейдоскоп)");
+                    }
+                    if (isOtpFieldVisible(page)) {
+                        log.info("АВТООТВЕТ: {} -> поле OTP уже на экране, повторный «Далее» не жмём, пользователь: {}",
+                                getSiteName(), creds.login());
+                        return null;
                     }
                     log.info("АВТООТВЕТ: {} -> капча пройдена, resumeYandexSmartCaptchaForForm + dismiss overlay, пользователь: {}",
                             getSiteName(), creds.login());
@@ -784,7 +854,8 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
             if (isOtpFieldVisible(page) || isYouDoLoggedIn(page) || isEmailErrorPresent(page)) {
                 return true;
             }
-            if (smartCaptchaSupport.isLoginCaptchaGate(page)) {
+            if (smartCaptchaSupport.isLoginCaptchaGate(page)
+                    || smartCaptchaSupport.hasCaptchaOnScreen(page)) {
                 return true;
             }
             if (!isYouDoEmailSubmitLoading(page) && !isEmailFieldVisible(page)) {
@@ -812,10 +883,30 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         return true;
     }
 
+    /**
+     * Перед продолжением шага: если на экране чекбокс, калейдоскоп или дополнительная проверка — решаем сразу.
+     * Вызывается после главной, куков, модалки, выбора email, заполнения почты, перед «Далее»,
+     * когда поля OTP ещё нет, на каждом срезе ожидания письма и перед вводом кода.
+     *
+     * @return {@code null}, если капчи на экране нет или её сняли и можно идти дальше по шагу
+     */
+    private StepResult<Void> guardCaptchaAtStep(Page page, DecryptedCredential creds, String step) {
+        if (page == null || page.isClosed()) {
+            return browserClosedResult();
+        }
+        if (!smartCaptchaSupport.hasCaptchaOnScreen(page)) {
+            return null;
+        }
+        YouDoLoginFsmState.log(log, YouDoLoginFsmState.CAPTCHA_GUARD, creds.login(),
+                "на шаге " + step + ", kind=" + smartCaptchaSupport.detectCaptchaKind(page));
+        return resolveCaptchaBlockingStep(page, creds);
+    }
+
     /** Если на экране капча (в т.ч. скрытый shell) — только 2Captcha, без reopen модалки. */
     private StepResult<Void> resolveCaptchaBlockingStep(Page page, DecryptedCredential creds) {
         if (!smartCaptchaSupport.isLoginCaptchaGate(page)
-                && !smartCaptchaSupport.isSmartCaptchaShellPresent(page)) {
+                && !smartCaptchaSupport.isSmartCaptchaShellPresent(page)
+                && !smartCaptchaSupport.hasCaptchaOnScreen(page)) {
             return null;
         }
         YouDoSmartCaptchaSupport.CaptchaKind kind = smartCaptchaSupport.detectCaptchaKind(page);
@@ -824,6 +915,14 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         captchaService.revealYouDoLoginCaptchaIframe(page);
         captchaService.revealSmartCaptchaOverlay(page);
         if (!smartCaptchaSupport.passLoginSmartCaptcha(page, creds.login())) {
+            if (page.isClosed()) {
+                return browserClosedResult();
+            }
+            if (isOtpFieldVisible(page) || awaitOtpFieldAfterCaptcha(page, 15_000)) {
+                log.info("АВТООТВЕТ: {} -> после капчи видно поле OTP, код из письма не пропускаем, пользователь: {}",
+                        getSiteName(), creds.login());
+                return null;
+            }
             return failYouDoCaptcha(page, creds.login(), "YouDo SmartCaptcha не пройдена (2Captcha)");
         }
         captchaService.resumeYandexSmartCaptchaForForm(page);
@@ -922,6 +1021,21 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         return YouDoLoginStage.UNKNOWN;
     }
 
+    /** «Далее» уже ушло на сервер — даём полю кода появиться, не закрывая браузер. */
+    private boolean awaitOtpFieldAfterCaptcha(Page page, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (page == null || page.isClosed()) {
+                return false;
+            }
+            if (isOtpFieldVisible(page)) {
+                return true;
+            }
+            page.waitForTimeout(400);
+        }
+        return isOtpFieldVisible(page);
+    }
+
     private boolean isOtpFieldVisible(Page page) {
         String[] selectors = {
                 "input[name='code']",
@@ -982,6 +1096,11 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
         return StepResult.fail(StepType.SEND_AUTOREPLY, errorCode, message, captureScreenshot(page));
     }
 
+    private StepResult<Void> browserClosedResult() {
+        return StepResult.fail(StepType.SEND_AUTOREPLY, AutoreplyErrorTypes.BROWSER_CLOSED,
+                "Браузер или вкладка закрыты", null);
+    }
+
     @Override
     protected StepResult<Void> finalizeBeforeSessionSave(Page page, DecryptedCredential creds,
                                                          AutoreplyMode autoreplyMode) {
@@ -989,6 +1108,9 @@ public class YouDoAutoreplyParser extends AutoreplyParser implements AutoreplyPl
             return null;
         }
         if (!smartCaptchaSupport.passLoginSmartCaptcha(page, creds.login())) {
+            if (page.isClosed()) {
+                return browserClosedResult();
+            }
             return failYouDoCaptcha(page, creds.login(), "YouDo SmartCaptcha не пройдена перед сохранением сессии");
         }
         return null;
